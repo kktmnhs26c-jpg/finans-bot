@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: finance-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python finance_bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ALLOWED_USER_IDS
+        sync: false
+      - key: DB_PATH
+        value: /opt/render/project/src/finance.db
