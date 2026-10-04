@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
+  <meta name="theme-color" content="#08111f" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="FINANS" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <title>FINANS — личные финансы</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg: #07101d;
+      --bg2: #0c1728;
+      --card: rgba(17, 31, 51, .88);
+      --card2: rgba(24, 42, 67, .92);
+      --line: rgba(255,255,255,.08);
+      --text: #f7f9fc;
+      --muted: #91a0b8;
+      --green: #28d17c;
+      --red: #ff6474;
+      --blue: #5da8ff;
+      --cyan: #61e4ff;
+      --shadow: 0 24px 70px rgba(0,0,0,.28);
+      --radius: 24px;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin:0; min-height:100%; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif; }
+    body {
+      min-height: 100svh;
+      background:
+        radial-gradient(900px 500px at 90% -10%, rgba(58,117,255,.22), transparent 60%),
+        radial-gradient(700px 450px at -10% 22%, rgba(0,215,184,.12), transparent 62%),
+        linear-gradient(180deg, #091321 0%, #07101d 48%, #06101a 100%);
+      padding: max(18px, env(safe-area-inset-top)) 16px calc(96px + env(safe-area-inset-bottom));
+    }
+    button, input, select { font: inherit; }
+    button { border:0; cursor:pointer; }
+    .app { max-width: 620px; margin:0 auto; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; margin:4px 2px 20px; }
+    .brand { display:flex; align-items:center; gap:12px; }
+    .logo {
+      width:44px; height:44px; border-radius:15px;
+      display:grid; place-items:center; font-weight:900; font-size:22px;
+      background:linear-gradient(135deg,#5aa8ff,#62e7ff);
+      color:#06101a; box-shadow:0 12px 36px rgba(78,173,255,.25);
+    }
+    .brand strong { display:block; letter-spacing:.08em; font-size:18px; }
+    .brand span { color:var(--muted); font-size:12px; }
+    .status { font-size:12px; color:var(--muted); padding:8px 11px; border:1px solid var(--line); border-radius:999px; background:rgba(255,255,255,.03); }
+    .hero {
+      background:
+        linear-gradient(145deg, rgba(37,66,105,.98), rgba(14,28,48,.96));
+      border:1px solid rgba(255,255,255,.09);
+      border-radius:30px; padding:24px; box-shadow:var(--shadow);
+      position:relative; overflow:hidden;
+    }
+    .hero:after {
+      content:""; position:absolute; right:-70px; top:-90px; width:220px; height:220px; border-radius:50%;
+      background:radial-gradient(circle, rgba(97,228,255,.22), transparent 65%);
+    }
+    .eyebrow { color:#a8bdd8; font-size:13px; margin-bottom:8px; }
+    .balance { font-size:42px; line-height:1.05; font-weight:850; letter-spacing:-.04em; margin-bottom:22px; }
+    .hero-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .metric { padding:14px 15px; border-radius:18px; background:rgba(4,14,26,.34); border:1px solid rgba(255,255,255,.06); }
+    .metric span { display:block; font-size:12px; color:#9fb0c8; margin-bottom:5px; }
+    .metric strong { font-size:17px; }
+    .income { color:var(--green); }
+    .expense { color:var(--red); }
+
+    .section { margin-top:22px; }
+    .section-head { display:flex; align-items:center; justify-content:space-between; margin:0 4px 11px; }
+    .section-head h2 { font-size:18px; margin:0; }
+    .section-head button { color:var(--blue); background:transparent; padding:8px; }
+    .periods { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:14px; }
+    .period {
+      color:var(--muted); background:rgba(255,255,255,.035);
+      border:1px solid var(--line); padding:11px 8px; border-radius:14px; font-weight:650;
+    }
+    .period.active { background:rgba(93,168,255,.14); color:#dceeff; border-color:rgba(93,168,255,.32); }
+
+    .quick { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .quick button { min-height:88px; border-radius:22px; text-align:left; padding:18px; color:white; box-shadow:var(--shadow); }
+    .quick button b { display:block; font-size:18px; margin-top:7px; }
+    .quick button span { font-size:24px; }
+    .add-income { background:linear-gradient(145deg,#173b31,#10271f); border:1px solid rgba(40,209,124,.22); }
+    .add-expense { background:linear-gradient(145deg,#44232c,#2d1720); border:1px solid rgba(255,100,116,.21); }
+
+    .list { display:flex; flex-direction:column; gap:9px; }
+    .tx {
+      display:grid; grid-template-columns:46px 1fr auto; gap:12px; align-items:center;
+      padding:13px; border:1px solid var(--line); background:var(--card); border-radius:18px;
+    }
+    .tx-icon { width:46px; height:46px; display:grid; place-items:center; border-radius:15px; font-size:21px; background:rgba(255,255,255,.05); }
+    .tx-main { min-width:0; }
+    .tx-main b { display:block; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .tx-main small { display:block; color:var(--muted); margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .tx-sum { text-align:right; font-weight:800; white-space:nowrap; }
+    .tx-delete { margin-top:5px; background:transparent; color:#7890ad; font-size:11px; padding:2px 0; width:100%; text-align:right; }
+    .empty { color:var(--muted); text-align:center; padding:28px 12px; border:1px dashed var(--line); border-radius:18px; }
+
+    .bottom {
+      position:fixed; left:50%; transform:translateX(-50%); bottom:calc(12px + env(safe-area-inset-bottom));
+      width:min(590px, calc(100% - 24px)); z-index:20;
+      display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; padding:8px;
+      border-radius:22px; border:1px solid rgba(255,255,255,.09);
+      background:rgba(9,19,33,.86); backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px);
+      box-shadow:0 18px 55px rgba(0,0,0,.34);
+    }
+    .bottom button { padding:10px 8px; border-radius:15px; color:var(--muted); background:transparent; font-weight:700; font-size:12px; }
+    .bottom button.active { color:white; background:rgba(255,255,255,.07); }
+    .bottom i { display:block; font-style:normal; font-size:20px; margin-bottom:3px; }
+
+    .view { display:none; }
+    .view.active { display:block; }
+
+    .overlay {
+      position:fixed; inset:0; z-index:100; display:none; align-items:flex-end; justify-content:center;
+      background:rgba(0,0,0,.55); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    }
+    .overlay.show { display:flex; }
+    .sheet {
+      width:min(620px,100%); background:#0e1a2a; border:1px solid var(--line);
+      border-radius:28px 28px 0 0; padding:22px 18px calc(24px + env(safe-area-inset-bottom));
+      box-shadow:0 -30px 90px rgba(0,0,0,.4);
+    }
+    .grab { width:42px; height:5px; border-radius:999px; background:#314157; margin:0 auto 18px; }
+    .sheet h3 { margin:0 0 16px; font-size:22px; }
+    .kind-toggle { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+    .kind-toggle button { border-radius:15px; padding:12px; background:#15253a; color:#9db0ca; font-weight:750; border:1px solid var(--line); }
+    .kind-toggle button.active.in { color:#cffff0; border-color:rgba(40,209,124,.33); background:rgba(40,209,124,.11); }
+    .kind-toggle button.active.out { color:#ffdce1; border-color:rgba(255,100,116,.34); background:rgba(255,100,116,.11); }
+    .field { margin-top:12px; }
+    .field label { display:block; color:var(--muted); font-size:12px; margin:0 0 7px 4px; }
+    .field input, .field select {
+      width:100%; border:1px solid var(--line); outline:none; color:white;
+      background:#111f31; border-radius:16px; padding:15px 14px;
+    }
+    .amount-input { font-size:28px !important; font-weight:800; letter-spacing:-.02em; }
+    .save { width:100%; margin-top:16px; padding:15px; border-radius:17px; color:#07101d; font-weight:850; background:linear-gradient(135deg,#5da8ff,#61e4ff); }
+    .cancel { width:100%; margin-top:8px; padding:12px; color:#9fb0c8; background:transparent; }
+
+    .login {
+      position:fixed; inset:0; z-index:120; display:none; place-items:center; padding:22px;
+      background:
+        radial-gradient(700px 420px at 50% 0%, rgba(81,154,255,.22), transparent 62%),
+        #07101d;
+    }
+    .login.show { display:grid; }
+    .login-card { width:min(420px,100%); background:var(--card2); border:1px solid var(--line); border-radius:28px; padding:25px; box-shadow:var(--shadow); text-align:center; }
+    .login-card .logo { margin:0 auto 16px; width:58px; height:58px; font-size:28px; }
+    .login-card h1 { margin:0; font-size:26px; }
+    .login-card p { color:var(--muted); line-height:1.5; margin:10px 0 18px; }
+    .code { width:100%; text-align:center; letter-spacing:.3em; font-size:26px; font-weight:800; color:white; background:#0e1b2b; border:1px solid var(--line); border-radius:17px; padding:15px 8px; outline:none; }
+    .login-btn { width:100%; margin-top:12px; padding:14px; border-radius:16px; font-weight:850; background:linear-gradient(135deg,#5da8ff,#61e4ff); color:#07101d; }
+    .hint { font-size:12px; color:#71839e; margin-top:13px; }
+    .toast {
+      position:fixed; left:50%; transform:translateX(-50%) translateY(20px); bottom:calc(92px + env(safe-area-inset-bottom));
+      background:#17263a; color:white; border:1px solid var(--line); border-radius:14px; padding:11px 14px;
+      opacity:0; pointer-events:none; transition:.2s; z-index:200; max-width:calc(100% - 32px); text-align:center; box-shadow:var(--shadow);
+    }
+    .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+    .loader { display:none; position:fixed; inset:0; z-index:110; place-items:center; background:rgba(7,16,29,.72); }
+    .loader.show { display:grid; }
+    .spinner { width:42px; height:42px; border-radius:50%; border:4px solid rgba(255,255,255,.12); border-top-color:#61e4ff; animation:spin .8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+
+    @media (min-width:700px) {
+      body { padding-top:34px; }
+      .hero { padding:28px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">₽</div>
+        <div><strong>FINANS</strong><span>Личный финансовый помощник</span></div>
+      </div>
+      <div class="status" id="status">онлайн</div>
+    </header>
+
+    <section id="homeView" class="view active">
+      <div class="hero">
+        <div class="eyebrow" id="periodTitle">Баланс за месяц</div>
+        <div class="balance" id="balance">0 ₽</div>
+        <div class="hero-grid">
+          <div class="metric"><span>Доходы</span><strong class="income" id="income">0 ₽</strong></div>
+          <div class="metric"><span>Расходы</span><strong class="expense" id="expense">0 ₽</strong></div>
+        </div>
+        <div class="periods">
+          <button class="period" data-period="today">Сегодня</button>
+          <button class="period active" data-period="month">Месяц</button>
+          <button class="period" data-period="all">Всё время</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-head"><h2>Быстрая запись</h2></div>
+        <div class="quick">
+          <button class="add-income" data-add="income"><span>＋</span><b>Доход</b></button>
+          <button class="add-expense" data-add="expense"><span>−</span><b>Расход</b></button>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-head"><h2>Последние операции</h2><button id="showHistory">Все</button></div>
+        <div class="list" id="recentList"></div>
+      </div>
+    </section>
+
+    <section id="historyView" class="view">
+      <div class="section-head"><h2>История операций</h2><button id="refreshHistory">Обновить</button></div>
+      <div class="list" id="historyList"></div>
+    </section>
+
+    <section id="profileView" class="view">
+      <div class="hero">
+        <div class="eyebrow">FINANS</div>
+        <div style="font-size:26px;font-weight:850;margin-bottom:9px">Ваши деньги — в одном месте</div>
+        <div style="color:#9fb0c8;line-height:1.5">Учёт полностью разделён по пользователям. Данные другого человека в вашем приложении не отображаются.</div>
+      </div>
+      <div class="section">
+        <div class="tx">
+          <div class="tx-icon">📤</div>
+          <div class="tx-main"><b>Экспорт данных</b><small>CSV-файл со всеми операциями</small></div>
+          <button id="exportBtn" style="background:#172940;color:#dceaff;padding:10px 12px;border-radius:12px">Скачать</button>
+        </div>
+      </div>
+      <div class="section">
+        <div class="tx">
+          <div class="tx-icon">📲</div>
+          <div class="tx-main"><b>На экран «Домой»</b><small>Safari → Поделиться → На экран «Домой»</small></div>
+          <div></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom">
+    <button class="active" data-view="home"><i>⌂</i>Главная</button>
+    <button data-view="history"><i>≡</i>История</button>
+    <button data-view="profile"><i>⚙︎</i>Ещё</button>
+  </nav>
+
+  <div class="overlay" id="addSheet">
+    <div class="sheet">
+      <div class="grab"></div>
+      <h3>Новая операция</h3>
+      <div class="kind-toggle">
+        <button id="kindIncome" class="in">Доход</button>
+        <button id="kindExpense" class="out active">Расход</button>
+      </div>
+      <div class="field">
+        <label>Сумма</label>
+        <input id="amountInput" class="amount-input" inputmode="decimal" placeholder="0 ₽" />
+      </div>
+      <div class="field">
+        <label>Описание</label>
+        <input id="noteInput" placeholder="Например: кофе, такси, зарплата" />
+      </div>
+      <div class="field">
+        <label>Категория</label>
+        <select id="categoryInput"></select>
+      </div>
+      <button class="save" id="saveTx">Сохранить</button>
+      <button class="cancel" id="cancelTx">Отмена</button>
+    </div>
+  </div>
+
+  <div class="login" id="loginScreen">
+    <div class="login-card">
+      <div class="logo">₽</div>
+      <h1>Вход в FINANS</h1>
+      <p>В Telegram-боте нажмите <b>«Установить на iPhone»</b>. Он покажет одноразовый 6-значный код.</p>
+      <input id="loginCode" class="code" inputmode="numeric" maxlength="6" placeholder="000000" />
+      <button id="loginBtn" class="login-btn">Войти</button>
+      <div class="hint">Код действует 10 минут и используется один раз.</div>
+    </div>
+  </div>
+
+  <div class="loader" id="loader"><div class="spinner"></div></div>
+  <div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  if (tg) { try { tg.ready(); tg.expand(); } catch (_) {} }
+
+  const $ = (id) => document.getElementById(id);
+  const state = { data:null, period:"month", kind:"expense" };
+  const tokenKey = "finans_token_v1";
+
+  const categories = {
+    expense: ["☕ Кофе","🍔 Еда","🎮 Игры и развлечения","✈️ Путешествия","🚕 Транспорт","🛍 Покупки","📱 Подписки и связь","🏠 Дом","💊 Здоровье","📚 Образование","🎁 Подарки","💼 Бизнес","💸 Прочее"],
+    income: ["💼 Зарплата","🏪 Бизнес","↩️ Возврат","🎁 Подарок","💰 Доход","💵 Прочее"]
+  };
+
+  const money = (value) => {
+    const n = Number(value || 0);
+    return new Intl.NumberFormat("ru-RU", { maximumFractionDigits:2 }).format(n) + " ₽";
+  };
+
+  const toast = (msg) => {
+    $("toast").textContent = msg;
+    $("toast").classList.add("show");
+    setTimeout(() => $("toast").classList.remove("show"), 2200);
+  };
+
+  const loading = (on) => $("loader").classList.toggle("show", !!on);
+
+  function headers(json=false) {
+    const h = {};
+    const token = localStorage.getItem(tokenKey);
+    if (token) h.Authorization = "Bearer " + token;
+    if (tg && tg.initData) h["X-Telegram-Init-Data"] = tg.initData;
+    if (json) h["Content-Type"] = "application/json";
+    return h;
+  }
+
+  async function api(path, options={}) {
+    const res = await fetch(path, { ...options, headers:{...headers(!!options.body), ...(options.headers||{})} });
+    if (res.status === 401) throw new Error("AUTH");
+    if (!res.ok) {
+      let msg = "Ошибка";
+      try { const j = await res.json(); msg = j.detail || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+    const type = res.headers.get("content-type") || "";
+    return type.includes("application/json") ? res.json() : res;
+  }
+
+  async function ensureSession() {
+    const qp = new URLSearchParams(location.search);
+    const t = qp.get("t");
+    if (t) {
+      localStorage.setItem(tokenKey, t);
+      history.replaceState({}, "", "/app");
+      return true;
+    }
+
+    if (localStorage.getItem(tokenKey)) return true;
+
+    if (tg && tg.initData) {
+      const res = await fetch("/api/session", {
+        method:"POST",
+        headers:{"X-Telegram-Init-Data":tg.initData}
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem(tokenKey, data.token);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function periodData() {
+    return state.data ? state.data[state.period] : {income:0,expense:0,balance:0};
+  }
+
+  function renderSummary() {
+    const d = periodData();
+    $("balance").textContent = money(d.balance);
+    $("income").textContent = money(d.income);
+    $("expense").textContent = money(d.expense);
+
+    const titles = {today:"Баланс за сегодня",month:"Баланс за месяц",all:"Баланс за всё время"};
+    $("periodTitle").textContent = titles[state.period];
+    document.querySelectorAll(".period").forEach(b => b.classList.toggle("active", b.dataset.period === state.period));
+  }
+
+  function txEmoji(tx) {
+    const c = tx.category || "";
+    const m = c.match(/^\p{Extended_Pictographic}/u);
+    return m ? m[0] : (tx.kind === "income" ? "↗" : "↘");
+  }
+
+  function txRow(tx) {
+    const el = document.createElement("div");
+    el.className = "tx";
+
+    const icon = document.createElement("div");
+    icon.className = "tx-icon";
+    icon.textContent = txEmoji(tx);
+
+    const main = document.createElement("div");
+    main.className = "tx-main";
+    const b = document.createElement("b");
+    b.textContent = tx.note || tx.category;
+    const s = document.createElement("small");
+    const dt = new Date(tx.created_at);
+    s.textContent = (tx.category || "") + " · " + dt.toLocaleDateString("ru-RU",{day:"2-digit",month:"short"}) + " " + dt.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
+    main.append(b,s);
+
+    const right = document.createElement("div");
+    const sum = document.createElement("div");
+    sum.className = "tx-sum " + (tx.kind === "income" ? "income" : "expense");
+    sum.textContent = (tx.kind === "income" ? "+" : "−") + money(tx.amount);
+    const del = document.createElement("button");
+    del.className = "tx-delete";
+    del.textContent = "Удалить";
+    del.addEventListener("click", async () => {
+      if (!confirm("Удалить эту операцию?")) return;
+      try {
+        await api("/api/transaction/" + tx.id, {method:"DELETE"});
+        toast("Операция удалена");
+        await loadDashboard();
+        if ($("historyView").classList.contains("active")) await loadHistory();
+      } catch(e) { handleError(e); }
+    });
+    right.append(sum,del);
+
+    el.append(icon,main,right);
+    return el;
+  }
+
+  function fillList(container, rows) {
+    container.innerHTML = "";
+    if (!rows || !rows.length) {
+      const e = document.createElement("div");
+      e.className = "empty";
+      e.textContent = "Операций пока нет";
+      container.appendChild(e);
+      return;
+    }
+    rows.forEach(tx => container.appendChild(txRow(tx)));
+  }
+
+  async function loadDashboard() {
+    try {
+      const d = await api("/api/dashboard");
+      state.data = d;
+      renderSummary();
+      fillList($("recentList"), (d.transactions || []).slice(0,6));
+      $("status").textContent = "синхронизировано";
+    } catch(e) { handleError(e); }
+  }
+
+  async function loadHistory() {
+    try {
+      const d = await api("/api/history?limit=100");
+      fillList($("historyList"), d.transactions || []);
+    } catch(e) { handleError(e); }
+  }
+
+  function handleError(e) {
+    if (e && e.message === "AUTH") {
+      localStorage.removeItem(tokenKey);
+      $("loginScreen").classList.add("show");
+      return;
+    }
+    toast(e && e.message ? e.message : "Что-то пошло не так");
+  }
+
+  function setKind(kind) {
+    state.kind = kind;
+    $("kindIncome").classList.toggle("active", kind === "income");
+    $("kindExpense").classList.toggle("active", kind === "expense");
+    const sel = $("categoryInput");
+    sel.innerHTML = "";
+    categories[kind].forEach(c => {
+      const o = document.createElement("option"); o.value=c; o.textContent=c; sel.appendChild(o);
+    });
+  }
+
+  function openAdd(kind) {
+    setKind(kind || "expense");
+    $("amountInput").value = "";
+    $("noteInput").value = "";
+    $("addSheet").classList.add("show");
+    setTimeout(() => $("amountInput").focus(), 180);
+  }
+
+  async function saveTx() {
+    const amount = $("amountInput").value.trim().replace(",", ".");
+    const note = $("noteInput").value.trim();
+    const category = $("categoryInput").value;
+    if (!amount || Number(amount) <= 0) { toast("Введите сумму"); return; }
+
+    loading(true);
+    try {
+      await api("/api/transaction", {
+        method:"POST",
+        body:JSON.stringify({kind:state.kind, amount, note, category})
+      });
+      $("addSheet").classList.remove("show");
+      toast(state.kind === "income" ? "Доход добавлен" : "Расход добавлен");
+      await loadDashboard();
+    } catch(e) { handleError(e); }
+    finally { loading(false); }
+  }
+
+  function showView(name) {
+    document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+    document.querySelectorAll(".bottom button").forEach(b => b.classList.toggle("active", b.dataset.view === name));
+    $(name + "View").classList.add("active");
+    if (name === "history") loadHistory();
+    window.scrollTo({top:0,behavior:"smooth"});
+  }
+
+  document.querySelectorAll(".period").forEach(b => b.addEventListener("click", () => { state.period=b.dataset.period; renderSummary(); }));
+  document.querySelectorAll("[data-add]").forEach(b => b.addEventListener("click", () => openAdd(b.dataset.add)));
+  document.querySelectorAll(".bottom button").forEach(b => b.addEventListener("click", () => showView(b.dataset.view)));
+  $("showHistory").addEventListener("click", () => showView("history"));
+  $("refreshHistory").addEventListener("click", loadHistory);
+  $("kindIncome").addEventListener("click", () => setKind("income"));
+  $("kindExpense").addEventListener("click", () => setKind("expense"));
+  $("cancelTx").addEventListener("click", () => $("addSheet").classList.remove("show"));
+  $("saveTx").addEventListener("click", saveTx);
+  $("addSheet").addEventListener("click", e => { if (e.target === $("addSheet")) $("addSheet").classList.remove("show"); });
+  $("exportBtn").addEventListener("click", async () => {
+    try {
+      const res = await fetch("/api/export", {headers:headers(false)});
+      if (res.status === 401) throw new Error("AUTH");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href=url; a.download="finans.csv"; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch(e) { handleError(e); }
+  });
+
+  $("loginCode").addEventListener("input", e => e.target.value = e.target.value.replace(/\D/g,"").slice(0,6));
+  $("loginBtn").addEventListener("click", async () => {
+    const code = $("loginCode").value;
+    if (code.length !== 6) { toast("Введите 6 цифр"); return; }
+    loading(true);
+    try {
+      const res = await fetch("/api/code-login", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({code})
+      });
+      if (!res.ok) {
+        let msg="Код неверный или истёк";
+        try { const j=await res.json(); msg=j.detail||msg; } catch(_){}
+        throw new Error(msg);
+      }
+      const d = await res.json();
+      localStorage.setItem(tokenKey, d.token);
+      $("loginScreen").classList.remove("show");
+      $("loginCode").value="";
+      await loadDashboard();
+      toast("FINANS подключён");
+    } catch(e) { toast(e.message || "Не удалось войти"); }
+    finally { loading(false); }
+  });
+
+  window.addEventListener("online", () => $("status").textContent="онлайн");
+  window.addEventListener("offline", () => $("status").textContent="нет сети");
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }
+
+  (async () => {
+    setKind("expense");
+    const ok = await ensureSession();
+    if (!ok) {
+      $("loginScreen").classList.add("show");
+      return;
+    }
+    await loadDashboard();
+  })();
+})();
+</script>
+</body>
+</html>
