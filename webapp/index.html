@@ -631,7 +631,27 @@
     if (!browserLoginUrl) {
       await prepareBrowserLogin();
     }
-    if (browserLoginUrl) {
+
+    if (!browserLoginUrl) {
+      toast("Не удалось открыть Telegram. Попробуйте ещё раз.");
+      return;
+    }
+
+    try {
+      const u = new URL(browserLoginUrl);
+      const start = u.searchParams.get("start") || "";
+      const directTelegramUrl =
+        "tg://resolve?domain=finance76tracker89bot&start=" +
+        encodeURIComponent(start);
+
+      location.href = directTelegramUrl;
+
+      setTimeout(() => {
+        if (!document.hidden) {
+          location.href = browserLoginUrl;
+        }
+      }, 1200);
+    } catch (_) {
       location.href = browserLoginUrl;
     }
   });
