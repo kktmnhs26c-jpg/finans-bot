@@ -5,6 +5,12 @@ import io
 import sqlite3
 import logging
 import hashlib
+import hmac
+import json
+import secrets
+from contextlib import asynccontextmanager
+from pathlib import Path
+from urllib.parse import parse_qsl
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
@@ -18,6 +24,8 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     BotCommand,
+    WebAppInfo,
+    MenuButtonWebApp,
 )
 from telegram.ext import (
     Application,
@@ -28,6 +36,10 @@ from telegram.ext import (
     filters,
 )
 
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import FileResponse, Response, RedirectResponse
+import uvicorn
+
 # ============================================================
 # НАСТРОЙКИ
 # ============================================================
@@ -36,6 +48,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DB_PATH = os.environ.get("DB_PATH", "finance.db")
 PORT = int(os.environ.get("PORT", "10000"))
+BASE_DIR = Path(__file__).resolve().parent
+WEBAPP_DIR = BASE_DIR / "webapp"
 
 WEBHOOK_BASE_URL = (
     os.environ.get("WEBHOOK_BASE_URL", "").strip()
@@ -318,6 +332,301 @@ def delete_last(user_id):
     return row
 
 
+
+# ============================================================
+# WEB-СЕССИИ ДЛЯ MINI APP / PWA
+# ============================================================
+
+def init_web_sessions():
+    if using_postgres():
+        with psycopg.connect(DATABASE_URL) as con:
+            with con.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS web_sessions (
+                        token_hash TEXT PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL
+                    )
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_web_sessions_user
+                    ON web_sessions(user_id)
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS web_login_codes (
+                        code_hash TEXT PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        expires_at TIMESTAMPTZ NOT NULL
+                    )
+                """)
+    else:
+        with sqlite3.connect(DB_PATH) as con:
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS web_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE INDEX IF NOT EXISTS idx_web_sessions_user
+                ON web_sessions(user_id)
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS web_login_codes (
+                    code_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    expires_at TEXT NOT NULL
+                )
+            """)
+
+
+def _token_hash(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_web_session(user_id):
+    token = secrets.token_urlsafe(32)
+    token_hash = _token_hash(token)
+    created_at = now_local()
+
+    if using_postgres():
+        with psycopg.connect(DATABASE_URL) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO web_sessions(token_hash, user_id, created_at)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (token_hash, user_id, created_at),
+                )
+    else:
+        with sqlite3.connect(DB_PATH) as con:
+            con.execute(
+                """
+                INSERT INTO web_sessions(token_hash, user_id, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    token_hash,
+                    user_id,
+                    created_at.isoformat(timespec="seconds"),
+                ),
+            )
+
+    return token
+
+
+def session_user_id(token):
+    if not token:
+        return None
+
+    token_hash = _token_hash(token)
+
+    if using_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "SELECT user_id FROM web_sessions WHERE token_hash=%s",
+                    (token_hash,),
+                )
+                row = cur.fetchone()
+                return int(row["user_id"]) if row else None
+
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    try:
+        row = con.execute(
+            "SELECT user_id FROM web_sessions WHERE token_hash=?",
+            (token_hash,),
+        ).fetchone()
+        return int(row["user_id"]) if row else None
+    finally:
+        con.close()
+
+
+def create_login_code(user_id):
+    code = f"{secrets.randbelow(1000000):06d}"
+    code_hash = _token_hash(code)
+    expires_at = now_local() + timedelta(minutes=10)
+
+    if using_postgres():
+        with psycopg.connect(DATABASE_URL) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM web_login_codes WHERE user_id=%s OR expires_at < %s",
+                    (user_id, now_local()),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO web_login_codes(code_hash, user_id, expires_at)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (code_hash, user_id, expires_at),
+                )
+    else:
+        with sqlite3.connect(DB_PATH) as con:
+            con.execute(
+                "DELETE FROM web_login_codes WHERE user_id=?",
+                (user_id,),
+            )
+            con.execute(
+                """
+                INSERT INTO web_login_codes(code_hash, user_id, expires_at)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    code_hash,
+                    user_id,
+                    expires_at.isoformat(timespec="seconds"),
+                ),
+            )
+
+    return code
+
+
+def redeem_login_code(code):
+    code = re.sub(r"\D", "", str(code or ""))
+    if len(code) != 6:
+        return None
+
+    code_hash = _token_hash(code)
+
+    if using_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, expires_at
+                    FROM web_login_codes
+                    WHERE code_hash=%s
+                    """,
+                    (code_hash,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+
+                if row["expires_at"] < now_local():
+                    cur.execute(
+                        "DELETE FROM web_login_codes WHERE code_hash=%s",
+                        (code_hash,),
+                    )
+                    return None
+
+                cur.execute(
+                    "DELETE FROM web_login_codes WHERE code_hash=%s",
+                    (code_hash,),
+                )
+                return int(row["user_id"])
+
+    with sqlite3.connect(DB_PATH) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            """
+            SELECT user_id, expires_at
+            FROM web_login_codes
+            WHERE code_hash=?
+            """,
+            (code_hash,),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        expires_at = datetime.fromisoformat(row["expires_at"])
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=TIMEZONE)
+
+        if expires_at < now_local():
+            con.execute(
+                "DELETE FROM web_login_codes WHERE code_hash=?",
+                (code_hash,),
+            )
+            return None
+
+        con.execute(
+            "DELETE FROM web_login_codes WHERE code_hash=?",
+            (code_hash,),
+        )
+        return int(row["user_id"])
+
+
+def validate_telegram_init_data(init_data):
+    if not init_data or not BOT_TOKEN:
+        return None
+
+    try:
+        data = dict(parse_qsl(init_data, keep_blank_values=True))
+        received_hash = data.pop("hash", "")
+        if not received_hash:
+            return None
+
+        check_string = "\n".join(
+            f"{key}={data[key]}" for key in sorted(data.keys())
+        )
+
+        secret_key = hmac.new(
+            b"WebAppData",
+            BOT_TOKEN.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+
+        calculated_hash = hmac.new(
+            secret_key,
+            check_string.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+        if not hmac.compare_digest(calculated_hash, received_hash):
+            return None
+
+        auth_date = int(data.get("auth_date", "0") or 0)
+        if auth_date:
+            age = int(now_local().timestamp()) - auth_date
+            if age < -300 or age > 86400:
+                return None
+
+        user_raw = data.get("user")
+        if not user_raw:
+            return None
+
+        user = json.loads(user_raw)
+        user_id = int(user["id"])
+        return {
+            "id": user_id,
+            "first_name": user.get("first_name", ""),
+            "last_name": user.get("last_name", ""),
+            "username": user.get("username", ""),
+        }
+    except Exception:
+        return None
+
+
+def delete_transaction_by_id(user_id, row_id):
+    if using_postgres():
+        with psycopg.connect(DATABASE_URL) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM transactions WHERE id=%s AND user_id=%s",
+                    (row_id, user_id),
+                )
+                return cur.rowcount > 0
+
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.execute(
+            "DELETE FROM transactions WHERE id=? AND user_id=?",
+            (row_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def webapp_url():
+    if not WEBHOOK_BASE_URL:
+        return ""
+    return WEBHOOK_BASE_URL.rstrip("/") + "/app"
+
+
 # ============================================================
 # ОБРАБОТКА СУММ И ТЕКСТА
 # ============================================================
@@ -522,7 +831,17 @@ def row_datetime(row):
 # ============================================================
 
 def main_menu_keyboard():
-    return InlineKeyboardMarkup([
+    rows = []
+
+    if webapp_url():
+        rows.append([
+            InlineKeyboardButton(
+                "📱 Открыть FINANS",
+                web_app=WebAppInfo(url=webapp_url()),
+            )
+        ])
+
+    rows += [
         [
             InlineKeyboardButton("💰 Мой баланс", callback_data="balance"),
         ],
@@ -539,11 +858,15 @@ def main_menu_keyboard():
             InlineKeyboardButton("📤 Экспорт", callback_data="export"),
         ],
         [
+            InlineKeyboardButton("📲 Установить на iPhone", callback_data="install"),
+        ],
+        [
             InlineKeyboardButton("↩️ Отменить запись", callback_data="undo_ask"),
             InlineKeyboardButton("❓ Помощь", callback_data="help"),
         ],
-    ])
+    ]
 
+    return InlineKeyboardMarkup(rows)
 
 def stats_keyboard():
     return InlineKeyboardMarkup([
@@ -840,6 +1163,35 @@ async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def install_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    if not webapp_url():
+        await update.effective_message.reply_text(
+            "Веб-приложение пока недоступно: не задан публичный адрес сервиса."
+        )
+        return
+
+    code = create_login_code(uid)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌐 Открыть FINANS", url=webapp_url())]
+    ])
+
+    await update.effective_message.reply_text(
+        "📲 <b>FINANS на экране iPhone</b>\n\n"
+        "1. Нажмите «Открыть FINANS».\n"
+        "2. Откройте страницу именно в Safari.\n"
+        "3. Введите код ниже, если приложение попросит вход:\n\n"
+        f"<code>{code}</code>\n\n"
+        "Код действует 10 минут и одноразовый.\n\n"
+        "После входа в Safari нажмите «Поделиться» → "
+        "«На экран Домой». После этого FINANS будет открываться "
+        "как отдельное приложение, без Telegram.",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_export(
         update.effective_message,
@@ -1008,6 +1360,32 @@ async def button_handler(
         )
         return
 
+    if data == "install":
+        if not webapp_url():
+            await query.message.reply_text(
+                "Веб-приложение пока недоступно.",
+                reply_markup=back_keyboard(),
+            )
+            return
+
+        code = create_login_code(uid)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🌐 Открыть FINANS", url=webapp_url())],
+            [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu")],
+        ])
+
+        await query.message.reply_text(
+            "📲 <b>Установка FINANS на iPhone</b>\n\n"
+            "Откройте FINANS в Safari и, если появится экран входа, "
+            "введите одноразовый код:\n\n"
+            f"<code>{code}</code>\n\n"
+            "Затем в Safari: «Поделиться» → «На экран Домой».\n"
+            "Код действует 10 минут.",
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        return
+
     if data == "help":
         await query.message.reply_text(
             HELP_TEXT,
@@ -1100,8 +1478,20 @@ async def post_init(application: Application):
         BotCommand("undo", "Удалить последнюю запись"),
         BotCommand("export", "Выгрузить CSV"),
         BotCommand("categories", "Категории"),
+        BotCommand("install", "Установить FINANS на iPhone"),
         BotCommand("help", "Помощь"),
     ])
+
+    if webapp_url():
+        try:
+            await application.bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(
+                    text="FINANS",
+                    web_app=WebAppInfo(url=webapp_url()),
+                )
+            )
+        except Exception as exc:
+            log.warning("Could not set Mini App menu button: %s", exc)
 
 
 async def error_handler(
@@ -1114,18 +1504,16 @@ async def error_handler(
     )
 
 
-def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN is not set")
 
-    init_db()
+# ============================================================
+# FASTAPI: TELEGRAM WEBHOOK + MINI APP / PWA
+# ============================================================
 
-    app = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
-        .build()
-    )
+telegram_app = None
+
+
+def build_telegram_application():
+    app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu_cmd))
@@ -1139,7 +1527,7 @@ def main():
     app.add_handler(CommandHandler("undo", undo_cmd))
     app.add_handler(CommandHandler("export", export_cmd))
     app.add_handler(CommandHandler("categories", categories_cmd))
-
+    app.add_handler(CommandHandler("install", install_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(
         MessageHandler(
@@ -1147,8 +1535,24 @@ def main():
             handle_text,
         )
     )
-
     app.add_error_handler(error_handler)
+    return app
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global telegram_app
+
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN is not set")
+
+    init_db()
+    init_web_sessions()
+
+    telegram_app = build_telegram_application()
+    await telegram_app.initialize()
+    await post_init(telegram_app)
+    await telegram_app.start()
 
     if WEBHOOK_BASE_URL:
         webhook_url = WEBHOOK_BASE_URL.rstrip("/") + "/telegram"
@@ -1156,19 +1560,256 @@ def main():
             BOT_TOKEN.encode("utf-8")
         ).hexdigest()
 
-        log.info("Starting webhook: %s", webhook_url)
-
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path="telegram",
-            webhook_url=webhook_url,
+        await telegram_app.bot.set_webhook(
+            url=webhook_url,
             secret_token=webhook_secret,
             drop_pending_updates=False,
         )
+        log.info("Telegram webhook active: %s", webhook_url)
     else:
-        log.info("No webhook URL detected; starting polling")
-        app.run_polling(drop_pending_updates=False)
+        await telegram_app.bot.delete_webhook(drop_pending_updates=False)
+        await telegram_app.updater.start_polling(drop_pending_updates=False)
+        log.info("No public URL; Telegram polling active")
+
+    try:
+        yield
+    finally:
+        if telegram_app:
+            if telegram_app.updater and telegram_app.updater.running:
+                await telegram_app.updater.stop()
+            if telegram_app.running:
+                await telegram_app.stop()
+            await telegram_app.shutdown()
+
+
+web = FastAPI(
+    title="FINANS",
+    docs_url=None,
+    redoc_url=None,
+    lifespan=lifespan,
+)
+
+
+async def request_user_id(request: Request):
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+        uid = session_user_id(token)
+        if uid:
+            return uid
+
+    init_data = request.headers.get("x-telegram-init-data", "")
+    user = validate_telegram_init_data(init_data)
+    if user:
+        return int(user["id"])
+
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def api_row(row):
+    return {
+        "id": int(row["id"]),
+        "kind": str(row["kind"]),
+        "amount": float(Decimal(int(row["amount_kopecks"])) / 100),
+        "amount_text": money(row["amount_kopecks"]),
+        "category": str(row["category"]),
+        "note": str(row["note"]),
+        "created_at": row_datetime(row).isoformat(),
+    }
+
+
+@web.get("/")
+async def root():
+    return RedirectResponse(url="/app", status_code=307)
+
+
+@web.get("/app")
+async def mini_app():
+    return FileResponse(WEBAPP_DIR / "index.html")
+
+
+@web.get("/manifest.webmanifest")
+async def manifest():
+    return FileResponse(
+        WEBAPP_DIR / "manifest.webmanifest",
+        media_type="application/manifest+json",
+    )
+
+
+@web.get("/sw.js")
+async def service_worker():
+    return FileResponse(
+        WEBAPP_DIR / "sw.js",
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@web.get("/icon.svg")
+async def icon():
+    return FileResponse(WEBAPP_DIR / "icon.svg", media_type="image/svg+xml")
+
+
+@web.post("/telegram")
+async def telegram_webhook(request: Request):
+    if not telegram_app:
+        raise HTTPException(status_code=503, detail="Bot is starting")
+
+    expected = hashlib.sha256(BOT_TOKEN.encode("utf-8")).hexdigest()
+    received = request.headers.get("x-telegram-bot-api-secret-token", "")
+
+    if WEBHOOK_BASE_URL and not hmac.compare_digest(expected, received):
+        raise HTTPException(status_code=403, detail="Invalid secret")
+
+    payload = await request.json()
+    update = Update.de_json(payload, telegram_app.bot)
+    await telegram_app.process_update(update)
+    return {"ok": True}
+
+
+@web.post("/api/session")
+async def api_session(request: Request):
+    init_data = request.headers.get("x-telegram-init-data", "")
+    user = validate_telegram_init_data(init_data)
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Telegram authorization failed")
+
+    token = create_web_session(int(user["id"]))
+    return {"token": token, "user": user}
+
+
+@web.post("/api/code-login")
+async def api_code_login(request: Request):
+    data = await request.json()
+    uid = redeem_login_code(data.get("code"))
+
+    if not uid:
+        raise HTTPException(
+            status_code=401,
+            detail="Код неверный или уже истёк",
+        )
+
+    token = create_web_session(uid)
+    return {"token": token}
+
+
+@web.get("/api/dashboard")
+async def api_dashboard(request: Request):
+    uid = await request_user_id(request)
+
+    _, today_income, today_expense = get_summary(uid, "today")
+    _, month_income, month_expense = get_summary(uid, "month")
+    _, all_income, all_expense = get_summary(uid, "all")
+
+    rows = fetch_last(uid, 12)
+
+    return {
+        "today": {
+            "income": today_income / 100,
+            "expense": today_expense / 100,
+            "balance": (today_income - today_expense) / 100,
+        },
+        "month": {
+            "income": month_income / 100,
+            "expense": month_expense / 100,
+            "balance": (month_income - month_expense) / 100,
+        },
+        "all": {
+            "income": all_income / 100,
+            "expense": all_expense / 100,
+            "balance": (all_income - all_expense) / 100,
+        },
+        "transactions": [api_row(r) for r in rows],
+    }
+
+
+@web.get("/api/history")
+async def api_history(request: Request, limit: int = 50):
+    uid = await request_user_id(request)
+    limit = max(1, min(int(limit), 100))
+    rows = fetch_last(uid, limit)
+    return {"transactions": [api_row(r) for r in rows]}
+
+
+@web.post("/api/transaction")
+async def api_add_transaction(request: Request):
+    uid = await request_user_id(request)
+    data = await request.json()
+
+    kind = str(data.get("kind", "")).strip().lower()
+    if kind not in {"income", "expense"}:
+        raise HTTPException(status_code=400, detail="Invalid transaction kind")
+
+    amount = normalize_amount(str(data.get("amount", "")))
+    if not amount:
+        raise HTTPException(status_code=400, detail="Invalid amount")
+
+    note = str(data.get("note") or "").strip() or "Без описания"
+    category = str(data.get("category") or "").strip()
+    if not category:
+        category = detect_category(note, kind)
+
+    insert_transaction(
+        uid,
+        kind,
+        amount,
+        category,
+        note,
+        now_local(),
+    )
+
+    return {"ok": True}
+
+
+@web.delete("/api/transaction/{row_id}")
+async def api_delete_transaction(row_id: int, request: Request):
+    uid = await request_user_id(request)
+    deleted = delete_transaction_by_id(uid, row_id)
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    return {"ok": True}
+
+
+@web.get("/api/export")
+async def api_export(request: Request):
+    uid = await request_user_id(request)
+    rows = fetch_all(uid)
+
+    s = io.StringIO()
+    writer = csv.writer(s, delimiter=";")
+    writer.writerow(["Дата", "Тип", "Сумма", "Категория", "Описание"])
+
+    for r in rows:
+        writer.writerow([
+            row_datetime(r).strftime("%Y-%m-%d %H:%M:%S"),
+            "Доход" if r["kind"] == "income" else "Расход",
+            str(Decimal(int(r["amount_kopecks"])) / 100).replace(".", ","),
+            r["category"],
+            r["note"],
+        ])
+
+    body = s.getvalue().encode("utf-8-sig")
+    filename = f"finans_{now_local():%Y-%m-%d}.csv"
+
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
+
+
+def main():
+    uvicorn.run(
+        web,
+        host="0.0.0.0",
+        port=PORT,
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":
