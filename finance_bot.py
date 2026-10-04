@@ -466,7 +466,7 @@ def session_user_id(token):
 def create_login_code(user_id):
     code = f"{secrets.randbelow(1000000):06d}"
     code_hash = _token_hash(code)
-    expires_at = now_local() + timedelta(minutes=10)
+    expires_at = now_local() + timedelta(minutes=60)
 
     if using_postgres():
         with psycopg.connect(DATABASE_URL) as con:
@@ -709,27 +709,59 @@ def create_browser_login_request():
 
 
 def claim_browser_login_request(request_id, user_id):
-    request_hash = _token_hash(str(request_id or ""))
+    request_id = str(request_id or "").strip()
+    if len(request_id) < 20 or len(request_id) > 80:
+        return False
+
+    request_hash = _token_hash(request_id)
+    expires_at = now_local() + timedelta(minutes=60)
 
     if using_postgres():
-        with psycopg.connect(DATABASE_URL) as con:
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as con:
             with con.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE browser_login_requests
-                    SET user_id=%s
+                    SELECT user_id, expires_at
+                    FROM browser_login_requests
                     WHERE request_hash=%s
-                      AND user_id IS NULL
-                      AND expires_at >= %s
+                    FOR UPDATE
                     """,
-                    (user_id, request_hash, now_local()),
+                    (request_hash,),
                 )
-                return cur.rowcount > 0
+                row = cur.fetchone()
+
+                if not row:
+                    cur.execute(
+                        """
+                        INSERT INTO browser_login_requests
+                        (request_hash, user_id, expires_at)
+                        VALUES (%s, %s, %s)
+                        """,
+                        (request_hash, user_id, expires_at),
+                    )
+                    return True
+
+                existing_user = row["user_id"]
+                existing_expiry = row["expires_at"]
+
+                if existing_user is not None and int(existing_user) != int(user_id) and existing_expiry >= now_local():
+                    return False
+
+                cur.execute(
+                    """
+                    UPDATE browser_login_requests
+                    SET user_id=%s, expires_at=%s
+                    WHERE request_hash=%s
+                    """,
+                    (user_id, expires_at, request_hash),
+                )
+                return True
 
     with sqlite3.connect(DB_PATH) as con:
+        con.row_factory = sqlite3.Row
         row = con.execute(
             """
-            SELECT expires_at, user_id
+            SELECT user_id, expires_at
             FROM browser_login_requests
             WHERE request_hash=?
             """,
@@ -737,24 +769,45 @@ def claim_browser_login_request(request_id, user_id):
         ).fetchone()
 
         if not row:
+            con.execute(
+                """
+                INSERT INTO browser_login_requests
+                (request_hash, user_id, expires_at)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    request_hash,
+                    user_id,
+                    expires_at.isoformat(timespec="seconds"),
+                ),
+            )
+            return True
+
+        existing_expiry = datetime.fromisoformat(row["expires_at"])
+        if existing_expiry.tzinfo is None:
+            existing_expiry = existing_expiry.replace(tzinfo=TIMEZONE)
+
+        existing_user = row["user_id"]
+        if (
+            existing_user is not None
+            and int(existing_user) != int(user_id)
+            and existing_expiry >= now_local()
+        ):
             return False
 
-        expires_at = datetime.fromisoformat(row[0])
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=TIMEZONE)
-
-        if row[1] is not None or expires_at < now_local():
-            return False
-
-        cur = con.execute(
+        con.execute(
             """
             UPDATE browser_login_requests
-            SET user_id=?
-            WHERE request_hash=? AND user_id IS NULL
+            SET user_id=?, expires_at=?
+            WHERE request_hash=?
             """,
-            (user_id, request_hash),
+            (
+                user_id,
+                expires_at.isoformat(timespec="seconds"),
+                request_hash,
+            ),
         )
-        return cur.rowcount > 0
+        return True
 
 
 def consume_browser_login_request(request_id):
@@ -1354,7 +1407,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         await update.effective_message.reply_text(
-            "⚠️ Ссылка входа устарела. Вернитесь в Safari и нажмите "
+            "⚠️ Не удалось подтвердить вход. Вернитесь в Safari и нажмите "
             "«Войти через Telegram» ещё раз."
         )
         return
