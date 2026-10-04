@@ -359,6 +359,13 @@ def init_web_sessions():
                         expires_at TIMESTAMPTZ NOT NULL
                     )
                 """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS browser_login_requests (
+                        request_hash TEXT PRIMARY KEY,
+                        user_id BIGINT,
+                        expires_at TIMESTAMPTZ NOT NULL
+                    )
+                """)
     else:
         with sqlite3.connect(DB_PATH) as con:
             con.execute("""
@@ -376,6 +383,13 @@ def init_web_sessions():
                 CREATE TABLE IF NOT EXISTS web_login_codes (
                     code_hash TEXT PRIMARY KEY,
                     user_id INTEGER NOT NULL,
+                    expires_at TEXT NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS browser_login_requests (
+                    request_hash TEXT PRIMARY KEY,
+                    user_id INTEGER,
                     expires_at TEXT NOT NULL
                 )
             """)
@@ -651,6 +665,161 @@ def redeem_browser_handoff(ticket):
             return None
 
         return int(row["user_id"])
+
+
+def create_browser_login_request():
+    request_id = secrets.token_urlsafe(24)
+    request_hash = _token_hash(request_id)
+    expires_at = now_local() + timedelta(minutes=10)
+
+    if using_postgres():
+        with psycopg.connect(DATABASE_URL) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM browser_login_requests WHERE expires_at < %s",
+                    (now_local(),),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO browser_login_requests
+                    (request_hash, user_id, expires_at)
+                    VALUES (%s, NULL, %s)
+                    """,
+                    (request_hash, expires_at),
+                )
+    else:
+        with sqlite3.connect(DB_PATH) as con:
+            con.execute(
+                """
+                INSERT INTO browser_login_requests
+                (request_hash, user_id, expires_at)
+                VALUES (?, NULL, ?)
+                """,
+                (
+                    request_hash,
+                    expires_at.isoformat(timespec="seconds"),
+                ),
+            )
+
+    return request_id
+
+
+def claim_browser_login_request(request_id, user_id):
+    request_hash = _token_hash(str(request_id or ""))
+
+    if using_postgres():
+        with psycopg.connect(DATABASE_URL) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE browser_login_requests
+                    SET user_id=%s
+                    WHERE request_hash=%s
+                      AND user_id IS NULL
+                      AND expires_at >= %s
+                    """,
+                    (user_id, request_hash, now_local()),
+                )
+                return cur.rowcount > 0
+
+    with sqlite3.connect(DB_PATH) as con:
+        row = con.execute(
+            """
+            SELECT expires_at, user_id
+            FROM browser_login_requests
+            WHERE request_hash=?
+            """,
+            (request_hash,),
+        ).fetchone()
+
+        if not row:
+            return False
+
+        expires_at = datetime.fromisoformat(row[0])
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=TIMEZONE)
+
+        if row[1] is not None or expires_at < now_local():
+            return False
+
+        cur = con.execute(
+            """
+            UPDATE browser_login_requests
+            SET user_id=?
+            WHERE request_hash=? AND user_id IS NULL
+            """,
+            (user_id, request_hash),
+        )
+        return cur.rowcount > 0
+
+
+def consume_browser_login_request(request_id):
+    request_hash = _token_hash(str(request_id or ""))
+
+    if using_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, expires_at
+                    FROM browser_login_requests
+                    WHERE request_hash=%s
+                    """,
+                    (request_hash,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                if row["expires_at"] < now_local():
+                    cur.execute(
+                        "DELETE FROM browser_login_requests WHERE request_hash=%s",
+                        (request_hash,),
+                    )
+                    return None
+                if row["user_id"] is None:
+                    return 0
+
+                user_id = int(row["user_id"])
+                cur.execute(
+                    "DELETE FROM browser_login_requests WHERE request_hash=%s",
+                    (request_hash,),
+                )
+                return user_id
+
+    with sqlite3.connect(DB_PATH) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            """
+            SELECT user_id, expires_at
+            FROM browser_login_requests
+            WHERE request_hash=?
+            """,
+            (request_hash,),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        expires_at = datetime.fromisoformat(row["expires_at"])
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=TIMEZONE)
+
+        if expires_at < now_local():
+            con.execute(
+                "DELETE FROM browser_login_requests WHERE request_hash=?",
+                (request_hash,),
+            )
+            return None
+
+        if row["user_id"] is None:
+            return 0
+
+        user_id = int(row["user_id"])
+        con.execute(
+            "DELETE FROM browser_login_requests WHERE request_hash=?",
+            (request_hash,),
+        )
+        return user_id
 
 
 def validate_telegram_init_data(init_data):
@@ -1169,6 +1338,23 @@ async def send_export(message, user_id):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("pending_kind", None)
+
+    if context.args and context.args[0].startswith("login_"):
+        request_id = context.args[0][6:]
+        if claim_browser_login_request(request_id, update.effective_user.id):
+            await update.effective_message.reply_text(
+                "✅ <b>Вход в FINANS подтверждён.</b>\n\n"
+                "Вернитесь в Safari — приложение откроется автоматически.",
+                parse_mode="HTML",
+            )
+            return
+
+        await update.effective_message.reply_text(
+            "⚠️ Ссылка входа устарела. Вернитесь в Safari и нажмите "
+            "«Войти через Telegram» ещё раз."
+        )
+        return
+
     await send_main_menu(update, context, with_logo=True)
 
 
@@ -1830,6 +2016,45 @@ async def api_consume_handoff(request: Request):
     token = create_web_session(uid)
     response = Response(
         content=json.dumps({"ok": True}),
+        media_type="application/json",
+    )
+    response.set_cookie(
+        key="finans_session",
+        value=token,
+        max_age=60 * 60 * 24 * 365,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@web.post("/api/browser-login/start")
+async def api_browser_login_start():
+    request_id = create_browser_login_request()
+    return {
+        "request_id": request_id,
+        "telegram_url": (
+            "https://t.me/finance76tracker89bot?start=login_"
+            + request_id
+        ),
+    }
+
+
+@web.get("/api/browser-login/status")
+async def api_browser_login_status(request_id: str):
+    uid = consume_browser_login_request(request_id)
+
+    if uid is None:
+        raise HTTPException(status_code=410, detail="Login request expired")
+
+    if uid == 0:
+        return {"authorized": False}
+
+    token = create_web_session(uid)
+    response = Response(
+        content=json.dumps({"authorized": True}),
         media_type="application/json",
     )
     response.set_cookie(
