@@ -552,6 +552,107 @@ def redeem_login_code(code):
         return int(row["user_id"])
 
 
+def create_browser_handoff(user_id):
+    ticket = secrets.token_urlsafe(24)
+    ticket_hash = _token_hash(ticket)
+    expires_at = now_local() + timedelta(minutes=2)
+
+    if using_postgres():
+        with psycopg.connect(DATABASE_URL) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM web_login_codes WHERE user_id=%s OR expires_at < %s",
+                    (user_id, now_local()),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO web_login_codes(code_hash, user_id, expires_at)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (ticket_hash, user_id, expires_at),
+                )
+    else:
+        with sqlite3.connect(DB_PATH) as con:
+            con.execute(
+                "DELETE FROM web_login_codes WHERE user_id=?",
+                (user_id,),
+            )
+            con.execute(
+                """
+                INSERT INTO web_login_codes(code_hash, user_id, expires_at)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    ticket_hash,
+                    user_id,
+                    expires_at.isoformat(timespec="seconds"),
+                ),
+            )
+
+    return ticket
+
+
+def redeem_browser_handoff(ticket):
+    ticket = str(ticket or "").strip()
+    if len(ticket) < 20:
+        return None
+
+    ticket_hash = _token_hash(ticket)
+
+    if using_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, expires_at
+                    FROM web_login_codes
+                    WHERE code_hash=%s
+                    """,
+                    (ticket_hash,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+
+                cur.execute(
+                    "DELETE FROM web_login_codes WHERE code_hash=%s",
+                    (ticket_hash,),
+                )
+
+                if row["expires_at"] < now_local():
+                    return None
+
+                return int(row["user_id"])
+
+    with sqlite3.connect(DB_PATH) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            """
+            SELECT user_id, expires_at
+            FROM web_login_codes
+            WHERE code_hash=?
+            """,
+            (ticket_hash,),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        con.execute(
+            "DELETE FROM web_login_codes WHERE code_hash=?",
+            (ticket_hash,),
+        )
+
+        expires_at = datetime.fromisoformat(row["expires_at"])
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=TIMEZONE)
+
+        if expires_at < now_local():
+            return None
+
+        return int(row["user_id"])
+
+
 def validate_telegram_init_data(init_data):
     if not init_data or not BOT_TOKEN:
         return None
@@ -1706,6 +1807,41 @@ async def api_session(request: Request):
 
     token = create_web_session(int(user["id"]))
     return {"token": token, "user": user}
+
+
+@web.post("/api/handoff")
+async def api_create_handoff(request: Request):
+    uid = await request_user_id(request)
+    ticket = create_browser_handoff(uid)
+    return {"handoff": ticket}
+
+
+@web.post("/api/handoff/consume")
+async def api_consume_handoff(request: Request):
+    data = await request.json()
+    uid = redeem_browser_handoff(data.get("handoff"))
+
+    if not uid:
+        raise HTTPException(
+            status_code=401,
+            detail="Ссылка входа устарела. Откройте FINANS из Telegram ещё раз.",
+        )
+
+    token = create_web_session(uid)
+    response = Response(
+        content=json.dumps({"ok": True}),
+        media_type="application/json",
+    )
+    response.set_cookie(
+        key="finans_session",
+        value=token,
+        max_age=60 * 60 * 24 * 365,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
 
 
 @web.post("/api/code-login")
