@@ -1172,21 +1172,22 @@ async def install_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    code = create_login_code(uid)
+    token = create_web_session(uid)
+    login_url = (
+        WEBHOOK_BASE_URL.rstrip("/")
+        + "/login?token="
+        + token
+    )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌐 Открыть FINANS", url=webapp_url())]
+        [InlineKeyboardButton("🌐 Открыть FINANS", url=login_url)]
     ])
 
     await update.effective_message.reply_text(
         "📲 <b>FINANS на экране iPhone</b>\n\n"
-        "1. Нажмите «Открыть FINANS».\n"
-        "2. Откройте страницу именно в Safari.\n"
-        "3. Введите код ниже, если приложение попросит вход:\n\n"
-        f"<code>{code}</code>\n\n"
-        "Код действует 10 минут и одноразовый.\n\n"
-        "После входа в Safari нажмите «Поделиться» → "
-        "«На экран Домой». После этого FINANS будет открываться "
-        "как отдельное приложение, без Telegram.",
+        "Нажмите «Открыть FINANS» — вход выполнится автоматически.\n\n"
+        "Затем в Safari нажмите «Поделиться» → "
+        "«На экран Домой». После этого приложение будет открываться "
+        "без кода и без повторного входа.",
         parse_mode="HTML",
         reply_markup=keyboard,
     )
@@ -1368,19 +1369,22 @@ async def button_handler(
             )
             return
 
-        code = create_login_code(uid)
+        token = create_web_session(uid)
+        login_url = (
+            WEBHOOK_BASE_URL.rstrip("/")
+            + "/login?token="
+            + token
+        )
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🌐 Открыть FINANS", url=webapp_url())],
+            [InlineKeyboardButton("🌐 Открыть FINANS", url=login_url)],
             [InlineKeyboardButton("⬅️ Главное меню", callback_data="menu")],
         ])
 
         await query.message.reply_text(
             "📲 <b>Установка FINANS на iPhone</b>\n\n"
-            "Откройте FINANS в Safari и, если появится экран входа, "
-            "введите одноразовый код:\n\n"
-            f"<code>{code}</code>\n\n"
-            "Затем в Safari: «Поделиться» → «На экран Домой».\n"
-            "Код действует 10 минут.",
+            "Нажмите «Открыть FINANS» — вход выполнится автоматически.\n"
+            "Потом в Safari: «Поделиться» → «На экран Домой».\n\n"
+            "Повторно вводить код не нужно.",
             parse_mode="HTML",
             reply_markup=keyboard,
         )
@@ -1598,6 +1602,12 @@ async def request_user_id(request: Request):
         if uid:
             return uid
 
+    cookie_token = request.cookies.get("finans_session", "")
+    if cookie_token:
+        uid = session_user_id(cookie_token)
+        if uid:
+            return uid
+
     init_data = request.headers.get("x-telegram-init-data", "")
     user = validate_telegram_init_data(init_data)
     if user:
@@ -1626,6 +1636,25 @@ async def root():
 @web.get("/app")
 async def mini_app():
     return FileResponse(WEBAPP_DIR / "index.html")
+
+
+@web.get("/login")
+async def login_by_token(token: str):
+    uid = session_user_id(token)
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid login link")
+
+    response = RedirectResponse(url="/app", status_code=302)
+    response.set_cookie(
+        key="finans_session",
+        value=token,
+        max_age=60 * 60 * 24 * 365,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
 
 
 @web.get("/manifest.webmanifest")
