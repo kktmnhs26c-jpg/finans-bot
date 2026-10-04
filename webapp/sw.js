@@ -1,4 +1,4 @@
-const CACHE = "finans-shell-v2";
+const CACHE = "finans-shell-v5";
 const SHELL = ["/app", "/manifest.webmanifest", "/icon.svg"];
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));
