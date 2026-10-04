@@ -276,9 +276,9 @@
     <div class="login-card">
       <div class="logo">₽</div>
       <h1>Вход в FINANS</h1>
-      <p>Код больше не нужен. Откройте FINANS в Telegram один раз, затем выберите <b>«Открыть в Safari»</b> — вход перенесётся автоматически.</p>
-      <button id="loginBtn" class="login-btn">Открыть Telegram</button>
-      <div class="hint">После первого входа Safari и приложение на экране «Домой» будут открываться без пароля.</div>
+      <p>Нажмите <b>«Войти через Telegram»</b>. В Telegram подтвердите вход кнопкой Start, затем вернитесь сюда — FINANS откроется автоматически.</p>
+      <button id="loginBtn" class="login-btn">Войти через Telegram</button>
+      <div class="hint" id="loginHint">Подготавливаем безопасный вход…</div>
     </div>
   </div>
 
@@ -293,6 +293,9 @@
   const $ = (id) => document.getElementById(id);
   const state = { data:null, period:"month", kind:"expense" };
   const tokenKey = "finans_token_v1";
+  let browserLoginRequest = null;
+  let browserLoginUrl = null;
+  let browserLoginTimer = null;
 
   const categories = {
     expense: ["☕ Кофе","🍔 Еда","🎮 Игры и развлечения","✈️ Путешествия","🚕 Транспорт","🛍 Покупки","📱 Подписки и связь","🏠 Дом","💊 Здоровье","📚 Образование","🎁 Подарки","💼 Бизнес","💸 Прочее"],
@@ -493,6 +496,61 @@
     } catch(e) { handleError(e); }
   }
 
+  async function prepareBrowserLogin() {
+    try {
+      $("loginHint").textContent = "Подготавливаем безопасный вход…";
+      const res = await fetch("/api/browser-login/start", { method:"POST" });
+      if (!res.ok) throw new Error("Не удалось подготовить вход");
+      const data = await res.json();
+
+      browserLoginRequest = data.request_id;
+      browserLoginUrl = data.telegram_url;
+      $("loginHint").textContent = "Готово. Нажмите кнопку и подтвердите вход в Telegram.";
+
+      if (browserLoginTimer) clearInterval(browserLoginTimer);
+      browserLoginTimer = setInterval(checkBrowserLogin, 1500);
+    } catch (_) {
+      $("loginHint").textContent = "Не удалось подготовить вход. Нажмите кнопку ещё раз.";
+    }
+  }
+
+  async function checkBrowserLogin() {
+    if (!browserLoginRequest) return false;
+
+    try {
+      const res = await fetch(
+        "/api/browser-login/status?request_id=" +
+        encodeURIComponent(browserLoginRequest),
+        { cache:"no-store" }
+      );
+
+      if (res.status === 410) {
+        browserLoginRequest = null;
+        browserLoginUrl = null;
+        if (browserLoginTimer) clearInterval(browserLoginTimer);
+        browserLoginTimer = null;
+        await prepareBrowserLogin();
+        return false;
+      }
+
+      if (!res.ok) return false;
+
+      const data = await res.json();
+      if (!data.authorized) return false;
+
+      if (browserLoginTimer) clearInterval(browserLoginTimer);
+      browserLoginTimer = null;
+      browserLoginRequest = null;
+      browserLoginUrl = null;
+      $("loginScreen").classList.remove("show");
+      await loadDashboard();
+      toast("Вход выполнен");
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function handleError(e) {
     if (e && e.message === "AUTH") {
       localStorage.removeItem(tokenKey);
@@ -569,8 +627,19 @@
     } catch(e) { handleError(e); }
   });
 
-  $("loginBtn").addEventListener("click", () => {
-    location.href = "https://t.me/finance76tracker89bot";
+  $("loginBtn").addEventListener("click", async () => {
+    if (!browserLoginUrl) {
+      await prepareBrowserLogin();
+    }
+    if (browserLoginUrl) {
+      location.href = browserLoginUrl;
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && browserLoginRequest) {
+      checkBrowserLogin();
+    }
   });
 
   window.addEventListener("online", () => $("status").textContent="онлайн");
@@ -585,6 +654,7 @@
     const ok = await ensureSession();
     if (!ok) {
       $("loginScreen").classList.add("show");
+      await prepareBrowserLogin();
       return;
     }
     await loadDashboard();
