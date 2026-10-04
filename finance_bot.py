@@ -64,6 +64,10 @@ logging.basicConfig(
 )
 log = logging.getLogger("finance_bot")
 
+# Не логируем полные HTTP-запросы Telegram API: в URL может быть BOT_TOKEN.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 # ============================================================
 # КАТЕГОРИИ
