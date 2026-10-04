@@ -276,10 +276,9 @@
     <div class="login-card">
       <div class="logo">₽</div>
       <h1>Вход в FINANS</h1>
-      <p>В Telegram-боте нажмите <b>«Установить на iPhone»</b>. Он покажет одноразовый 6-значный код.</p>
-      <input id="loginCode" class="code" inputmode="numeric" maxlength="6" placeholder="000000" />
-      <button id="loginBtn" class="login-btn">Войти</button>
-      <div class="hint">Код действует 10 минут и используется один раз.</div>
+      <p>Код больше не нужен. Откройте FINANS в Telegram один раз, затем выберите <b>«Открыть в Safari»</b> — вход перенесётся автоматически.</p>
+      <button id="loginBtn" class="login-btn">Открыть Telegram</button>
+      <div class="hint">После первого входа Safari и приложение на экране «Домой» будут открываться без пароля.</div>
     </div>
   </div>
 
@@ -336,6 +335,58 @@
 
   async function ensureSession() {
     const qp = new URLSearchParams(location.search);
+
+    // Inside Telegram we already know who the user is.
+    // Create a short-lived, one-time handoff for Safari and put it in
+    // the current URL. Telegram's "Open in Safari" then carries it across.
+    if (tg && tg.initData) {
+      const res = await fetch("/api/session", {
+        method:"POST",
+        headers:{"X-Telegram-Init-Data":tg.initData}
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem(tokenKey, data.token);
+
+        try {
+          const handoffRes = await fetch("/api/handoff", {
+            method:"POST",
+            headers:{
+              "Authorization":"Bearer " + data.token,
+              "X-Telegram-Init-Data":tg.initData
+            }
+          });
+          if (handoffRes.ok) {
+            const handoffData = await handoffRes.json();
+            history.replaceState(
+              {},
+              "",
+              "/app?handoff=" + encodeURIComponent(handoffData.handoff)
+            );
+          }
+        } catch (_) {}
+
+        return true;
+      }
+    }
+
+    // Safari receives the one-time handoff, exchanges it for a secure
+    // year-long first-party cookie, then removes it from the address bar.
+    const handoff = qp.get("handoff");
+    if (handoff) {
+      try {
+        const res = await fetch("/api/handoff/consume", {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({handoff})
+        });
+        if (res.ok) {
+          history.replaceState({}, "", "/app");
+          return true;
+        }
+      } catch (_) {}
+    }
+
     const t = qp.get("t");
     if (t) {
       localStorage.setItem(tokenKey, t);
@@ -345,23 +396,11 @@
 
     if (localStorage.getItem(tokenKey)) return true;
 
-    // Safari/PWA keeps a secure session cookie after the first automatic login.
     try {
       const probe = await fetch("/api/dashboard", { cache:"no-store" });
       if (probe.ok) return true;
     } catch (_) {}
 
-    if (tg && tg.initData) {
-      const res = await fetch("/api/session", {
-        method:"POST",
-        headers:{"X-Telegram-Init-Data":tg.initData}
-      });
-      if (res.ok) {
-        const data = await res.json();
-        localStorage.setItem(tokenKey, data.token);
-        return true;
-      }
-    }
     return false;
   }
 
@@ -530,30 +569,8 @@
     } catch(e) { handleError(e); }
   });
 
-  $("loginCode").addEventListener("input", e => e.target.value = e.target.value.replace(/\D/g,"").slice(0,6));
-  $("loginBtn").addEventListener("click", async () => {
-    const code = $("loginCode").value;
-    if (code.length !== 6) { toast("Введите 6 цифр"); return; }
-    loading(true);
-    try {
-      const res = await fetch("/api/code-login", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({code})
-      });
-      if (!res.ok) {
-        let msg="Код неверный или истёк";
-        try { const j=await res.json(); msg=j.detail||msg; } catch(_){}
-        throw new Error(msg);
-      }
-      const d = await res.json();
-      localStorage.setItem(tokenKey, d.token);
-      $("loginScreen").classList.remove("show");
-      $("loginCode").value="";
-      await loadDashboard();
-      toast("FINANS подключён");
-    } catch(e) { toast(e.message || "Не удалось войти"); }
-    finally { loading(false); }
+  $("loginBtn").addEventListener("click", () => {
+    location.href = "https://t.me/finance76tracker89bot";
   });
 
   window.addEventListener("online", () => $("status").textContent="онлайн");
