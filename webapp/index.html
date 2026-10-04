@@ -345,6 +345,12 @@
 
     if (localStorage.getItem(tokenKey)) return true;
 
+    // Safari/PWA keeps a secure session cookie after the first automatic login.
+    try {
+      const probe = await fetch("/api/dashboard", { cache:"no-store" });
+      if (probe.ok) return true;
+    } catch (_) {}
+
     if (tg && tg.initData) {
       const res = await fetch("/api/session", {
         method:"POST",
