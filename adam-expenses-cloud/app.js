@@ -26,6 +26,10 @@ async function boot(){
 }
 $('loginForm').onsubmit=async e=>{e.preventDefault();try{await send('login',{username:$('username').value,password:$('loginPassword').value});$('loginPassword').value='';await boot()}catch(e){report(e.message,true)}};
 $('setupForm').onsubmit=async e=>{e.preventDefault();try{await send('setup',{setupCode:$('setupCode').value,password:$('setupPassword').value});history.replaceState(null,'',location.pathname);$('setupCode').value='';$('setupPassword').value='';await boot();report('Аккаунт владельца создан. Добавьте расходы и создайте доступ партнёра.')}catch(e){report(e.message,true)}};
+$('passwordShortcut').onclick=()=>{
+  $('passwordPanel').scrollIntoView({behavior:'smooth',block:'start'});
+  $('currentOwnerPassword').focus({preventScroll:true});
+};
 $('logout').onclick=async()=>{try{await send('logout',{});display('auth');me=null;rows=[];report('Вы вышли.')}catch(e){report(e.message,true)}};
 function filtered(){
  const month=$('month').value,term=$('search').value.toLowerCase(),cat=$('category').value,scope=$('scope').value;
