@@ -186,7 +186,7 @@ def export_records(user):
 @auth(owner=True)
 def get_partner(user):
     with db() as c:r=c.execute("SELECT scope FROM expenses_cloud_users WHERE username='partner'").fetchone()
-    return jsonify(configured=bool(r),scope=r["scope"] if r else "shop")
+    return jsonify(configured=bool(r),scope=r["scope"] if r else "all")
 
 @app.put("/api/partner")
 @auth(owner=True)
@@ -200,6 +200,29 @@ def put_partner(user):
               ON CONFLICT(username) DO UPDATE SET password_hash=EXCLUDED.password_hash,scope=EXCLUDED.scope,version=expenses_cloud_users.version+1""",(generate_password_hash(pw),scope))
         return jsonify(ok=True)
     except ValueError as e:return jsonify(error=str(e)),400
+
+
+@app.put("/api/password")
+@auth(owner=True)
+def update_owner_password(user):
+    try:
+        b=body()
+        old=b.get("currentPassword")
+        fresh=b.get("newPassword")
+        if not isinstance(old,str) or not isinstance(fresh,str) or not 12<=len(fresh)<=200:
+            raise ValueError("Новый пароль должен содержать от 12 до 200 символов.")
+        with db() as c:
+            info=c.execute("SELECT password_hash,version FROM expenses_cloud_users WHERE username='owner'").fetchone()
+            if not info or not check_password_hash(info["password_hash"],old):
+                return jsonify(error="Текущий пароль неверный."),403
+            updated=c.execute("UPDATE expenses_cloud_users SET password_hash=%s,version=version+1 WHERE username='owner' RETURNING version",(generate_password_hash(fresh),)).fetchone()
+        session.clear()
+        session["user"]="owner"
+        session["version"]=updated["version"]
+        session.permanent=True
+        return jsonify(ok=True)
+    except ValueError as e:
+        return jsonify(error=str(e)),400
 
 @app.errorhandler(413)
 def big(e):return jsonify(error="Файл слишком большой."),413
