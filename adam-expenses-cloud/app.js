@@ -74,6 +74,14 @@ $('expenseForm').onsubmit=async e=>{
  const item={id:editing||crypto.randomUUID(),amount:Math.round(Number(raw)*100),date:$('date').value,scope:$('editScope').value,category:$('editCategory').value.trim(),payment:$('payment').value,note:$('note').value.trim()};
  try{await send('expenses',{expense:item});$('dialog').close();$('month').value=item.date.slice(0,7);$('scope').value='all';$('search').value='';$('category').value='all';await refresh();report('Сохранено в общей базе.')}catch(e){report(e.message,true)}
 };
+$('ownerPasswordForm').onsubmit=async e=>{
+ e.preventDefault();
+ try{
+  await send('password',{currentPassword:$('currentOwnerPassword').value,newPassword:$('newOwnerPassword').value},'PUT');
+  $('currentOwnerPassword').value='';$('newOwnerPassword').value='';
+  report('Пароль владельца изменён. Используйте новый пароль на всех устройствах.');
+ }catch(e){report(e.message,true)}
+};
 async function partnerStatus(){try{const p=await api('partner');$('partnerScope').value=p.scope;$('partnerStatus').textContent=p.configured?'Пароль партнёра установлен. Новый пароль завершит старые сеансы партнёра.':'У партнёра пока нет доступа.'}catch(e){report(e.message,true)}}
 $('partnerForm').onsubmit=async e=>{e.preventDefault();try{await send('partner',{scope:$('partnerScope').value,password:$('partnerPassword').value},'PUT');$('partnerPassword').value='';await partnerStatus();report('Доступ партнёра готов. Передайте ему адрес сайта и пароль.')}catch(e){report(e.message,true)}};
 $('exportBtn').onclick=async()=>{try{const data=await api('export'),url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='rashody-backup-'+today()+'.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000);report('Резервная копия подготовлена.')}catch(e){report(e.message,true)}};
