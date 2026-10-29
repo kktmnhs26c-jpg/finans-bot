@@ -90,7 +90,7 @@ def me():
 def setup():
     try:
         b=body();password=b.get("password");code=b.get("setupCode")
-        if not OWNER_SETUP_CODE or not isinstance(code,str) or not hmac.compare_digest(code,OWNER_SETUP_CODE):return jsonify(error="Неверный код настройки."),403
+        if not OWNER_SETUP_CODE or not isinstance(code,str) or not hmac.compare_digest(code.encode('utf-8'),OWNER_SETUP_CODE.encode('utf-8')):return jsonify(error="Неверный код настройки."),403
         if not isinstance(password,str) or len(password)<12:return jsonify(error="Пароль от 12 символов."),400
         with db() as c:
             row=c.execute("INSERT INTO expenses_cloud_users(username,password_hash,scope) VALUES('owner',%s,'all') ON CONFLICT DO NOTHING RETURNING version",(generate_password_hash(password),)).fetchone()
