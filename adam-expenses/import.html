@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Перенос расходов — Адам</title>
+<style>
+:root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#243a2c;background:#f4f6f1}*{box-sizing:border-box}body{margin:0;padding:24px 16px}main{max-width:680px;margin:30px auto;background:white;border:1px solid #dfe6d9;border-radius:24px;padding:28px;box-shadow:0 20px 50px #243a2c13}h1{margin:0 0 10px;font-size:29px}p{line-height:1.6;color:#607060}.step{margin:20px 0;padding:16px;background:#f4f7f0;border-radius:14px}.step strong{display:block;margin-bottom:7px}input{width:100%;padding:12px;border:1px solid #bdcdb7;border-radius:11px;background:white;margin:8px 0}button,.link{border:0;border-radius:11px;padding:12px 16px;font-weight:700;cursor:pointer;background:#376c41;color:white;display:inline-block;text-decoration:none}button:disabled{background:#aeb8a9;cursor:not-allowed}.secondary{background:#e7eee4;color:#244a31}.status{padding:12px;border-radius:10px;background:#e8f4e8;margin-top:14px}.error{background:#fff1ef;color:#962f22}.fine{font-size:12px;color:#718078;margin-top:20px}code{font-size:13px}ul{line-height:1.65}#preview{display:none}#preview.show{display:block}#status{display:none}nav{margin-top:22px;display:flex;gap:12px;flex-wrap:wrap}
+</style></head><body><main>
+<h1>Перенос расходов</h1><p>Импортируйте записи из старого сайта в <b>Расходы — Адам</b> на этом устройстве. Файл обрабатывается в вашем браузере и никуда не отправляется.</p>
+<div class="step"><strong>1. На старом сайте</strong>Откройте список расходов и скачайте <b>Экспорт CSV</b>. Если есть фильтр дат, выберите <b>весь период</b> — не только текущий месяц.</div>
+<div class="step"><strong>2. Выберите скачанный CSV</strong><input id="file" type="file" accept=".csv,text/csv,text/plain" aria-label="CSV с расходами"><div id="status" class="status" role="status"></div></div>
+<div id="preview" class="step"><strong>3. Проверьте данные</strong><div id="details"></div><p>Существующие записи сохраняются. Повторно загруженные одинаковые строки не добавляются.</p><button id="import">Импортировать расходы</button></div>
+<nav><a class="link secondary" href="/">Открыть учёт расходов</a></nav>
+<p class="fine">Важно: новые данные сохраняются только в этом браузере и не синхронизируются автоматически с другим устройством. После импорта нажмите «Резервная копия» в основном приложении.</p></main>
+<script>
+'use strict';
+const KEY='adam_expenses_offline_v1';
+const el=x=>document.getElementById(x);
+let prepared=[];
+function report(message,bad=false){el('status').style.display='block';el('status').className='status'+(bad?' error':'');el('status').textContent=message}
+function csvRows(text,sep){
+  const rows=[];let row=[],cell='',quoted=false;
+  for(let i=0;i<text.length;i++){const ch=text[i];
+    if(quoted){if(ch==='"'&&text[i+1]==='"'){cell+='"';i++;}else if(ch==='"'){quoted=false;}else{cell+=ch;}}
+    else if(ch==='"'&&cell===''){quoted=true;}
+    else if(ch===sep){row.push(cell);cell='';}
+    else if(ch==='\n'||ch==='\r'){if(ch==='\r'&&text[i+1]==='\n')i++;row.push(cell);if(row.some(x=>x.trim()))rows.push(row);row=[];cell='';}
+    else{cell+=ch;}
+  }
+  if(quoted)throw Error('В CSV не закрыта кавычка.');
+  row.push(cell);if(row.some(x=>x.trim()))rows.push(row);
+  return rows;
+}
+function parseCSV(text){
+ const options=[';','\t',','].map(sep=>csvRows(text.replace(/^\uFEFF/,''),sep));
+ options.sort((a,b)=>(b[0]?.length||0)-(a[0]?.length||0));
+ return options[0];
+}
+function head(s){return String(s).normalize('NFKC').toLowerCase().replace(/[^а-яёa-z0-9]/g,'')}
+function column(headers,options){return headers.findIndex(h=>options.includes(h)||options.some(x=>h.startsWith(x)))}
+function parseDate(s){
+ const t=String(s||'').trim();let iso=t;
+ const ru=t.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})(?:\s|$)/);
+ if(ru)iso=ru[3]+'-'+ru[2].padStart(2,'0')+'-'+ru[1].padStart(2,'0');
+ else if(/^\d{4}-\d{2}-\d{2}/.test(t))iso=t.slice(0,10);
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)||Number.isNaN(Date.parse(iso))||new Date(iso).toISOString().slice(0,10)!==iso)throw Error('Некорректная дата: '+t);
+ return iso;
+}
+function amountKopeks(s){
+ const t=String(s||'').replace(/\s/g,'').replace(/[^\d,.\-]/g,'');
+ const fixed=t.includes(',')&&t.includes('.')?(t.lastIndexOf(',')>t.lastIndexOf('.')?t.replace(/\./g,'').replace(',','.'):t.replace(/,/g,'')):t.replace(',','.');
+ if(!/^\d+(\.\d{1,2})?$/.test(fixed))throw Error('Некорректная сумма: '+s);
+ const n=Math.round(Number(fixed)*100);
+ if(!Number.isSafeInteger(n)||n<=0||n>100000000000)throw Error('Сумма выходит за допустимый предел: '+s);
+ return n;
+}
+function scopeOf(s){
+ const t=String(s||'').trim().toLowerCase();
+ if(/магаз|бизнес|shop|work|рабоч/.test(t))return 'Магазин';
+ if(/лич|семь|person|дом/.test(t))return 'Личные';
+ throw Error('Неизвестный раздел: '+s);
+}
+function paymentOf(s){
+ const t=String(s||'').trim().toLowerCase();
+ if(!t)return 'Не указано';
+ if(/перевод|сбп|transfer/.test(t))return 'Перевод';
+ if(/карт|безнал|card|bank/.test(t))return 'Карта';
+ if(/налич|cash/.test(t))return 'Наличные';
+ return 'Не указано';
+}
+function hash(s,seed){let h=seed>>>0;for(let i=0;i<s.length;i++)h=Math.imul(h^s.charCodeAt(i),16777619)>>>0;return h.toString(16).padStart(8,'0')}
+function parseExpenses(text){
+ const rows=parseCSV(text);
+ if(rows.length<2)throw Error('CSV не содержит операций.');
+ if(rows.length>50001)throw Error('В файле слишком много строк (максимум 50 000).');
+ const h=rows[0].map(head);
+ const date=column(h,['дата','date']),amount=column(h,['сумма','amount','стоимость']),scope=column(h,['раздел','учёт','учет','scope']);
+ const category=column(h,['категория','category']),payment=column(h,['оплата','способоплаты','payment']),note=column(h,['комментарий','примечание','note','description','описание']),title=column(h,['название','наименование','title','расход']),type=column(h,['типоперации','тип','kind','type']);
+ if(date<0||amount<0||scope<0)throw Error('Нет обязательных колонок «Дата», «Сумма» или «Раздел». Пришлите CSV в чат для индивидуального переноса.');
+ const ids=new Map(),result=[];let income=0;
+ rows.slice(1).forEach((r,i)=>{
+   const get=k=>k<0?'':String(r[k]??'').trim();
+   const kind=get(type).toLowerCase();
+   if(/доход|income/.test(kind)){income++;return}
+   if(kind&&!/расход|expense|списан|трата/.test(kind))throw Error('Строка '+(i+2)+': неизвестный тип операции '+kind);
+   let obj;
+   try {
+     const categoryName=get(category)||get(title)||'Прочее';
+     const comment=[get(title),get(note)].filter(Boolean).filter((v,j,a)=>a.indexOf(v)===j).join(' · ').slice(0,500);
+     obj={amount:amountKopeks(get(amount)),date:parseDate(get(date)),scope:scopeOf(get(scope)),category:categoryName.slice(0,60),payment:paymentOf(get(payment)),note:comment};
+   }catch(e){throw Error('Строка '+(i+2)+': '+e.message)}
+   const signature=JSON.stringify(obj),num=(ids.get(signature)||0)+1;ids.set(signature,num);
+   obj.id='csv-'+hash(signature,2166136261)+hash(signature,1917694501)+'-'+num;
+   result.push(obj);
+ });
+ if(!result.length)throw Error('В CSV не обнаружены расходы.');
+ return {result,income};
+}
+function existing(){
+ const raw=localStorage.getItem(KEY);
+ if(!raw)return [];
+ const arr=JSON.parse(raw);
+ if(!Array.isArray(arr)||!arr.every(x=>x&&typeof x.id==='string'))throw Error('Невозможно проверить текущие записи. Сделайте резервную копию и обратитесь за помощью.');
+ return arr;
+}
+el('file').onchange=async e=>{
+ prepared=[];el('preview').className='step';
+ const file=e.target.files?.[0];if(!file)return;
+ try{
+   if(file.size>20*1024*1024)throw Error('Файл больше 20 МБ.');
+   const parsed=parseExpenses(await file.text());
+   const current=existing(),oldIds=new Set(current.map(r=>r.id));
+   prepared=parsed.result.filter(r=>!oldIds.has(r.id));
+   const total=prepared.reduce((sum,r)=>sum+r.amount,0)/100;
+   el('details').textContent='В CSV расходов: '+parsed.result.length+'. Новых: '+prepared.length+'. Уже импортированы: '+(parsed.result.length-prepared.length)+'. Доходов пропущено: '+parsed.income+'. Сумма новых расходов: '+total.toLocaleString('ru-RU',{style:'currency',currency:'RUB'})+'.';
+   el('import').disabled=prepared.length===0;
+   el('preview').className='step show';report('Файл прочитан. Проверьте количество операций перед импортом.');
+ }catch(err){report('Импорт не подготовлен: '+err.message,true)}
+};
+el('import').onclick=()=>{
+ try{
+   if(!prepared.length)return;
+   const current=existing(),ids=new Set(current.map(r=>r.id));
+   const incoming=prepared.filter(r=>!ids.has(r.id));
+   if(!incoming.length){report('Все эти операции уже есть.');return}
+   if(!confirm('Добавить '+incoming.length+' расходов? Старые записи сохранятся.'))return;
+   const all=current.concat(incoming);
+   if(all.length>100000)throw Error('Слишком много операций.');
+   localStorage.setItem(KEY,JSON.stringify(all));
+   prepared=[];el('import').disabled=true;
+   report('Добавлено '+incoming.length+' расходов. Откройте учёт расходов и скачайте резервную копию.');
+ }catch(err){report('Не удалось сохранить записи: '+err.message,true)}
+};
+</script></body></html>
