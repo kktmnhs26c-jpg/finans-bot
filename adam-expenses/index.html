@@ -80,9 +80,9 @@ function fromLegacy(r,sourceKey){
   if(title&&title!==category)note=(title+(note?' — '+note:'')).slice(0,500);
   const scopeText=String(r.scope??r['Раздел']??r['Учёт']??'').toLowerCase();
   const paymentText=String(r.payment??r.method??r['Оплата']??'').toLowerCase();
-  const payment=paymentText.includes('перевод')?'Перевод':paymentText.includes('карт')?'Карта':'Наличные';
+  const payment=(/перевод|transfer/.test(paymentText))?'Перевод':(/карт|card/.test(paymentText))?'Карта':'Наличные';
   const id='old-'+stableID(sourceKey);
-  const row={id,amount:importAmount(r.amount??r['Сумма']??r['Сумма ₽']),date:importDate(r.date??r['Дата']),scope:/магазин|бизнес|рубл/.test(scopeText)?'Магазин':'Личные',category,payment,note};
+  const row={id,amount:importAmount(r.amount??r['Сумма']??r['Сумма ₽']),date:importDate(r.date??r['Дата']),scope:/магазин|бизнес|рубл|^shop$|^business$/.test(scopeText)?'Магазин':'Личные',category,payment,note};
   if(!valid(row))throw Error('Некорректные данные: '+String(r.date??r['Дата']??'').slice(0,30)+' / '+category);
   return row;
 }
