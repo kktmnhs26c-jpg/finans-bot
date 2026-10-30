@@ -1,17 +1,19 @@
 'use strict';
-let sales=[];
+let sales=[],monthlySales=[];
 const finCents=id=>{let s=$(id).value.trim().replace(/\s/g,'').replace(',','.');if(!/^\d+(\.\d{1,2})?$/.test(s))throw Error('Введите корректную сумму.');let v=Math.round(Number(s)*100);if(!Number.isSafeInteger(v))throw Error('Слишком большая сумма.');return v};
 async function refreshFinance(){
  if(!me)return;
- try{sales=(await api('sales')).sales;renderFinance()}
+ try{const [d,m]=await Promise.all([api('sales'),api('monthly-sales')]);sales=d.sales;monthlySales=m.monthly;renderFinance()}
  catch(e){report('Продажи: '+e.message,true)}
 }
 function renderFinance(){
  if(!me)return;
  const month=$('month').value,monthly=sales.filter(s=>s.day.startsWith(month));
  const sum=(list,key)=>list.reduce((a,x)=>a+Number(x[key]||0),0);
- const revenue=sum(monthly,'revenue'),gross=sum(monthly,'gross'),checks=sum(monthly,'checks');
+ const override=monthlySales.find(x=>x.month===month);
+ const revenue=override?Number(override.revenue):sum(monthly,'revenue'),gross=override?Number(override.gross):sum(monthly,'gross'),checks=override?Number(override.checks):sum(monthly,'checks');
  const costs=rows.filter(x=>x.scope==='Магазин'&&x.date.startsWith(month)&&!/(закуп|товар|поставщик|поступление)/i.test(x.category)).reduce((a,x)=>a+x.amount,0);
+ $('monthlyMode').textContent=override?'Итоги за месяц введены вручную. Дневные записи не прибавляются повторно.':'Итоги рассчитаны из продаж по дням. Можно вместо этого ввести общие продажи за месяц.';
  $('finRevenue').textContent=money(revenue);$('finGross').textContent=money(gross);$('finCosts').textContent=money(costs);
  $('finNet').textContent=money(gross-costs);$('finChecks').textContent=checks.toLocaleString('ru-RU');
  $('finAvg').textContent='Средний чек: '+money(checks?Math.round(revenue/checks):0);
@@ -47,3 +49,26 @@ const oldRefresh=refresh;
 refresh=async function(){await oldRefresh();if(me)await refreshFinance()};
 const oldRender=render;
 render=function(){oldRender();renderFinance()};
+
+$('newMonthSale').onclick=()=>{
+ const m=$('month').value,x=monthlySales.find(v=>v.month===m);
+ $('monthSaleMonth').value=m;$('monthSaleRevenue').value=x?String(x.revenue/100):'';
+ $('monthSaleGross').value=x?String(x.gross/100):'';$('monthSaleChecks').value=x?.checks??'';
+ $('monthSaleNote').value=x?.note||'';$('deleteMonthSale').hidden=!x;
+ $('monthSaleDialog').showModal();
+};
+$('closeMonthSale').onclick=()=>$('monthSaleDialog').close();
+$('monthSaleForm').onsubmit=async e=>{
+ e.preventDefault();
+ try{
+  const x={month:$('monthSaleMonth').value,revenue:finCents('monthSaleRevenue'),gross:finCents('monthSaleGross'),checks:Number($('monthSaleChecks').value),note:$('monthSaleNote').value};
+  if(x.gross>x.revenue)throw Error('Валовая прибыль не может превышать выручку.');
+  await send('monthly-sales',x);$('monthSaleDialog').close();$('month').value=x.month;
+  await refreshFinance();report('Месячные итоги сохранены.')
+ }catch(e){report(e.message,true)}
+};
+$('deleteMonthSale').onclick=async()=>{
+ const m=$('monthSaleMonth').value;if(!confirm('Удалить месячные итоги за '+m+'?'))return;
+ try{await api('monthly-sales/'+m,{method:'DELETE'});$('monthSaleDialog').close();await refreshFinance();report('Месячная запись удалена.')}
+ catch(e){report(e.message,true)}
+};
