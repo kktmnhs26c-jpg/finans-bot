@@ -26,6 +26,8 @@ def headers(r):
 def root():return send_from_directory(os.path.dirname(__file__),"index.html")
 @app.get("/app.js")
 def js():return send_from_directory(os.path.dirname(__file__),"app.js")
+@app.get("/finance.js")
+def finance_js():return send_from_directory(os.path.dirname(__file__),"finance.js")
 @app.get("/health")
 def health():return jsonify(ok=True,database_configured=bool(DATABASE_URL),setup_configured=bool(OWNER_SETUP_CODE))
 
