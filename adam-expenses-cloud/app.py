@@ -42,6 +42,7 @@ def initialize():
         c.execute("""CREATE TABLE IF NOT EXISTS expenses_cloud_users(username TEXT PRIMARY KEY,password_hash TEXT NOT NULL,scope TEXT NOT NULL DEFAULT 'all',version INTEGER NOT NULL DEFAULT 1)""")
         c.execute("""CREATE TABLE IF NOT EXISTS expenses_cloud_records(id TEXT PRIMARY KEY,amount BIGINT NOT NULL,date TEXT NOT NULL,scope TEXT NOT NULL,category TEXT NOT NULL,payment TEXT NOT NULL,note TEXT NOT NULL DEFAULT '',created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
         c.execute("""CREATE TABLE IF NOT EXISTS expenses_cloud_sales(day DATE PRIMARY KEY,revenue BIGINT NOT NULL,gross BIGINT NOT NULL,checks INTEGER NOT NULL DEFAULT 0,note TEXT NOT NULL DEFAULT '')""")
+        c.execute("""CREATE TABLE IF NOT EXISTS expenses_cloud_monthly_sales(month TEXT PRIMARY KEY,revenue BIGINT NOT NULL,gross BIGINT NOT NULL,checks INTEGER NOT NULL DEFAULT 0,note TEXT NOT NULL DEFAULT '')""")
     _initialized=True
 
 @app.before_request
@@ -269,4 +270,34 @@ def delete_sales(user,day):
     try:date.fromisoformat(day)
     except ValueError:return jsonify(error="Неверная дата."),400
     with db() as c:c.execute("DELETE FROM expenses_cloud_sales WHERE day=%s",(day,))
+    return jsonify(ok=True)
+
+@app.get("/api/monthly-sales")
+@auth()
+def monthly_sales(user):
+    with db() as c:
+        rows=c.execute("SELECT month,revenue,gross,checks,note FROM expenses_cloud_monthly_sales ORDER BY month DESC").fetchall()
+    return jsonify(monthly=rows)
+
+@app.post("/api/monthly-sales")
+@auth(owner=True)
+def save_monthly_sales(user):
+    try:
+        b=body();month=b.get("month")
+        if not isinstance(month,str) or not re.fullmatch(r"\\d{4}-(0[1-9]|1[0-2])",month):raise ValueError("Неверный месяц.")
+        revenue,gross,checks=(b.get(k) for k in ("revenue","gross","checks"))
+        if any(type(x)!=int or x<0 for x in (revenue,gross,checks)) or revenue>100_000_000_000 or gross>revenue or checks>1000000:raise ValueError("Проверьте суммы и количество чеков.")
+        note=b.get("note","")
+        if not isinstance(note,str) or len(note)>500:raise ValueError("Неверное примечание.")
+        with db() as c:
+            c.execute("""INSERT INTO expenses_cloud_monthly_sales(month,revenue,gross,checks,note) VALUES(%s,%s,%s,%s,%s)
+              ON CONFLICT(month) DO UPDATE SET revenue=EXCLUDED.revenue,gross=EXCLUDED.gross,checks=EXCLUDED.checks,note=EXCLUDED.note""",(month,revenue,gross,checks,note))
+        return jsonify(ok=True)
+    except ValueError as e:return jsonify(error=str(e)),400
+
+@app.delete("/api/monthly-sales/<month>")
+@auth(owner=True)
+def delete_monthly_sales(user,month):
+    if not re.fullmatch(r"\\d{4}-(0[1-9]|1[0-2])",month):return jsonify(error="Неверный месяц."),400
+    with db() as c:c.execute("DELETE FROM expenses_cloud_monthly_sales WHERE month=%s",(month,))
     return jsonify(ok=True)
