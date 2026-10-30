@@ -284,7 +284,7 @@ def monthly_sales(user):
 def save_monthly_sales(user):
     try:
         b=body();month=b.get("month")
-        if not isinstance(month,str) or not re.fullmatch(r"\\d{4}-(0[1-9]|1[0-2])",month):raise ValueError("Неверный месяц.")
+        if not isinstance(month,str) or not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])",month):raise ValueError("Неверный месяц.")
         revenue,gross,checks=(b.get(k) for k in ("revenue","gross","checks"))
         if any(type(x)!=int or x<0 for x in (revenue,gross,checks)) or revenue>100_000_000_000 or gross>revenue or checks>1000000:raise ValueError("Проверьте суммы и количество чеков.")
         note=b.get("note","")
@@ -298,6 +298,6 @@ def save_monthly_sales(user):
 @app.delete("/api/monthly-sales/<month>")
 @auth(owner=True)
 def delete_monthly_sales(user,month):
-    if not re.fullmatch(r"\\d{4}-(0[1-9]|1[0-2])",month):return jsonify(error="Неверный месяц."),400
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])",month):return jsonify(error="Неверный месяц."),400
     with db() as c:c.execute("DELETE FROM expenses_cloud_monthly_sales WHERE month=%s",(month,))
     return jsonify(ok=True)
