@@ -39,6 +39,7 @@ def initialize():
     with db() as c:
         c.execute("""CREATE TABLE IF NOT EXISTS expenses_cloud_users(username TEXT PRIMARY KEY,password_hash TEXT NOT NULL,scope TEXT NOT NULL DEFAULT 'all',version INTEGER NOT NULL DEFAULT 1)""")
         c.execute("""CREATE TABLE IF NOT EXISTS expenses_cloud_records(id TEXT PRIMARY KEY,amount BIGINT NOT NULL,date TEXT NOT NULL,scope TEXT NOT NULL,category TEXT NOT NULL,payment TEXT NOT NULL,note TEXT NOT NULL DEFAULT '',created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+        c.execute("""CREATE TABLE IF NOT EXISTS expenses_cloud_sales(day DATE PRIMARY KEY,revenue BIGINT NOT NULL,gross BIGINT NOT NULL,checks INTEGER NOT NULL DEFAULT 0,note TEXT NOT NULL DEFAULT '')""")
     _initialized=True
 
 @app.before_request
@@ -226,3 +227,44 @@ def update_owner_password(user):
 
 @app.errorhandler(413)
 def big(e):return jsonify(error="Файл слишком большой."),413
+
+def sales_valid(b):
+    d=b.get("day")
+    try: date.fromisoformat(d)
+    except (ValueError,TypeError): raise ValueError("Неверная дата.")
+    vals=[]
+    for key in ("revenue","gross","checks"):
+        v=b.get(key)
+        if type(v)!=int or not 0<=v<=100_000_000_000:raise ValueError("Неверное значение: "+key)
+        vals.append(v)
+    if vals[1]>vals[0]:raise ValueError("Валовая прибыль не может превышать выручку.")
+    if vals[2]>1000000:raise ValueError("Слишком много чеков.")
+    note=b.get("note","")
+    if not isinstance(note,str) or len(note)>500:raise ValueError("Слишком длинный комментарий.")
+    return (d,*vals,note)
+
+@app.get("/api/sales")
+@auth()
+def list_sales(user):
+    with db() as c:
+        rows=c.execute("SELECT day::text AS day,revenue,gross,checks,note FROM expenses_cloud_sales ORDER BY day DESC").fetchall()
+    return jsonify(sales=rows)
+
+@app.post("/api/sales")
+@auth(owner=True)
+def save_sales(user):
+    try:
+        v=sales_valid(body())
+        with db() as c:
+            c.execute("""INSERT INTO expenses_cloud_sales(day,revenue,gross,checks,note) VALUES(%s,%s,%s,%s,%s)
+            ON CONFLICT(day) DO UPDATE SET revenue=EXCLUDED.revenue,gross=EXCLUDED.gross,checks=EXCLUDED.checks,note=EXCLUDED.note""",v)
+        return jsonify(ok=True)
+    except ValueError as e:return jsonify(error=str(e)),400
+
+@app.delete("/api/sales/<day>")
+@auth(owner=True)
+def delete_sales(user,day):
+    try:date.fromisoformat(day)
+    except ValueError:return jsonify(error="Неверная дата."),400
+    with db() as c:c.execute("DELETE FROM expenses_cloud_sales WHERE day=%s",(day,))
+    return jsonify(ok=True)
